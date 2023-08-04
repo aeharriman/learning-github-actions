@@ -1,0 +1,93 @@
+---
+- name: Provision Infrastructure
+  hosts: localhost
+  gather_facts: False
+  environment:
+    ANSIBLE_HOST_KEY_CHECKING: False
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    local_terraform_directory: ./
+    ansible_user: ubuntu
+  tasks:
+    - name: Install necessary packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - unzip
+        - python3-pip
+        - docker.io
+        - docker-compose
+      become: yes
+
+    - name: Install necessary python packages
+      pip:
+        name: docker-compose
+        state: present
+
+    - name: Run terraform
+      community.general.terraform:
+        project_path: "{{ local_terraform_directory }}"
+        force_init: true
+        state: present
+      register: terraform_output
+
+    - name: Parse terraform output
+      set_fact:
+        server_public_ip: "{{ terraform_output.outputs.server_public_ip.value }}"
+
+    - name: Add new host to inventory
+      add_host:
+        hostname: "{{ server_public_ip }}"
+        groups: webservers
+
+- name: Deploy and Setup Spring Boot app
+  hosts: webservers
+  gather_facts: no
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+    local_springboot_jar_path: hotel-0.0.1-SNAPSHOT.jar
+    remote_springboot_directory: /opt/springboot
+    ansible_user: ubuntu
+    ansible_ssh_private_key_file: /home/york17/.ssh/main-key.pem
+
+  tasks:
+    - name: Wait for SSH to become available
+      wait_for_connection:
+        delay: 60
+        timeout: 320
+    - name: Update package cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      become: yes
+
+    - name: Install necessary packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - openjdk-17-jdk
+        - unzip
+        - python3-pip
+      become: yes
+
+    - name: Create Spring Boot directory
+      file:
+        path: "{{ remote_springboot_directory }}"
+        state: directory
+      become: yes
+
+    - name: Copy Spring Boot app to server
+      copy:
+        src: "{{ local_springboot_jar_path }}"
+        dest: "{{ remote_springboot_directory }}"
+        mode: '0755'
+      become: yes
+
+    - name: Start Spring Boot app
+      command: "nohup java -jar {{ remote_springboot_directory }}/hotel-0.0.1-SNAPSHOT.jar &"
+      args:
+        chdir: "{{ remote_springboot_directory }}"
+      become: yes
+
